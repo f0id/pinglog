@@ -140,23 +140,23 @@ ping -O -i 1 "$IP_ADDRESS" 2>&1 | while IFS= read -r line; do
         SEQ=$(echo "$line" | grep -o "icmp_seq=[0-9]*" | cut -d'=' -f2)
         TIME=$(echo "$line" | grep -o "time=[0-9.]* ms" | cut -d'=' -f2)
         
-        if [ -z "$TIME" ]; then
-            TIME="<1"
-        else
-            # Убираем " ms" для числового сравнения
-            TIME_NUM=$(echo "$TIME" | sed 's/ ms//')
+        # Округляем время до целого числа для сравнения
+        TIME_INT=$(echo "$TIME" | cut -d'.' -f1)  # Берем целую часть
+        
+        # Если время меньше 1 мс, то TIME_INT может быть пустым
+        if [ -z "$TIME_INT" ]; then
+            TIME_INT=0
         fi
         
-        # Проверяем, превышает ли время отклика порог
-        if [ -n "$TIME_NUM" ] && [ "$(echo "$TIME_NUM > $HIGH_THRESHOLD" | bc -l)" -eq 1 ]; then
+        # Сравниваем целые числа
+        if [ "$TIME_INT" -gt "$HIGH_THRESHOLD" ]; then
             log_message "ERROR: ICMP_SEQ=$SEQ TIME=${TIME}ms (HIGH LATENCY > ${HIGH_THRESHOLD}ms)"
         else
             log_message "ICMP_SEQ=$SEQ TIME=${TIME}ms"
         fi
     
-    # Другие сообщения (статистика) - пропускаем
+    # Другие сообщения (статистика)
     else
-        # Пропускаем пустые строки и строки со статистикой
         if [ -n "$line" ] && ! echo "$line" | grep -q "packets transmitted\|round-trip\|---"; then
             log_message "INFO: $line"
         fi
