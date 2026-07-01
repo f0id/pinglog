@@ -4,29 +4,27 @@
 IP_ADDRESS=""
 CLEAR_LOGS=false
 NO_LOG=false
-PING_LOG="ping_log.txt"
-ERROR_LOG="error_log.txt"
-TIMEOUT=1  # Таймаут в секундах
+LOG_FILE="log.txt"
+HIGH_THRESHOLD=100  # Порог высокого времени отклика в мс
 
 # Функция вывода справки
 show_help() {
     echo "Usage: $0 [IP address] [options]"
     echo ""
     echo "Options:"
-    echo "  -c, --clear              Clear previous logs before starting"
+    echo "  -c, --clear              Clear previous log before starting"
     echo "  --no-log                 Disable logging (console output only)"
-    echo "  -l <filename>            Set custom log file for successful pings"
-    echo "  -e <filename>            Set custom error log file"
-    echo "  -t <seconds>             Set timeout for each ping (default: 1)"
+    echo "  -w <filename>            Set custom log file (default: log.txt)"
+    echo "  --high <ms>              Set high response time threshold in ms (default: 100)"
     echo "  -h, --help               Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 8.8.8.8"
     echo "  $0 8.8.8.8 -c"
-    echo "  $0 8.8.8.8 -l my_pings.txt -e my_errors.txt"
+    echo "  $0 8.8.8.8 -w my_log.txt"
+    echo "  $0 8.8.8.8 --high 50"
     echo "  $0 8.8.8.8 --no-log"
-    echo "  $0 8.8.8.8 -t 2"
-    echo "  $0 -c 8.8.8.8 -l pings.txt"
+    echo "  $0 -c 8.8.8.8 -w my_log.txt --high 150"
     exit 0
 }
 
@@ -41,28 +39,20 @@ while [[ $# -gt 0 ]]; do
             NO_LOG=true
             shift
             ;;
-        -l)
+        -w)
             if [ -z "$2" ] || [[ "$2" == -* ]]; then
-                echo "Error: -l requires a filename argument"
+                echo "Error: -w requires a filename argument"
                 exit 1
             fi
-            PING_LOG="$2"
+            LOG_FILE="$2"
             shift 2
             ;;
-        -e)
+        --high)
             if [ -z "$2" ] || [[ "$2" == -* ]]; then
-                echo "Error: -e requires a filename argument"
+                echo "Error: --high requires a value in milliseconds"
                 exit 1
             fi
-            ERROR_LOG="$2"
-            shift 2
-            ;;
-        -t)
-            if [ -z "$2" ] || [[ "$2" == -* ]]; then
-                echo "Error: -t requires a timeout value"
-                exit 1
-            fi
-            TIMEOUT="$2"
+            HIGH_THRESHOLD="$2"
             shift 2
             ;;
         -h|--help)
@@ -92,28 +82,26 @@ if [ -z "$IP_ADDRESS" ]; then
     exit 1
 fi
 
-# Очистка логов, если указан флаг (только если логирование включено)
+# Очистка лога, если указан флаг (только если логирование включено)
 if [ "$CLEAR_LOGS" = true ] && [ "$NO_LOG" = false ]; then
-    > "$PING_LOG"
-    > "$ERROR_LOG"
-    echo "Previous logs cleared"
+    > "$LOG_FILE"
+    echo "Previous log cleared"
 fi
 
 # Вывод информации о запуске
 echo "========================================"
 echo "Ping Logger Started"
 echo "Target IP: $IP_ADDRESS"
-echo "Timeout: ${TIMEOUT}s per ping"
+echo "High response time threshold: ${HIGH_THRESHOLD}ms"
 if [ "$NO_LOG" = true ]; then
     echo "Logging: DISABLED (console output only)"
 else
     echo "Logging: ENABLED"
-    echo "Success log: $PING_LOG"
-    echo "Error log: $ERROR_LOG"
+    echo "Log file: $LOG_FILE"
     if [ "$CLEAR_LOGS" = true ]; then
-        echo "Logs cleared on start"
+        echo "Log cleared on start"
     else
-        echo "Appending to existing logs"
+        echo "Appending to existing log"
     fi
 fi
 echo "========================================"
@@ -122,8 +110,7 @@ echo ""
 
 # Функция для логирования
 log_message() {
-    local type="$1"
-    local message="$2"
+    local message="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     local log_entry="[$timestamp] $message"
     
@@ -132,41 +119,46 @@ log_message() {
     
     # Запись в файл, если логирование включено
     if [ "$NO_LOG" = false ]; then
-        if [ "$type" = "success" ]; then
-            echo "$log_entry" >> "$PING_LOG"
-        else
-            echo "$log_entry" >> "$ERROR_LOG"
-        fi
+        echo "$log_entry" >> "$LOG_FILE"
     fi
 }
 
 # Запуск непрерывного ping
-# -O опция: выводить сообщение при отсутствии ответа (поддерживается не везде)
-# Используем timeout для каждого пакета, но сохраняем непрерывную сессию
-ping -O -i 1 -W "$TIMEOUT" "$IP_ADDRESS" 2>&1 | while IFS= read -r line; do
-    # Если строка содержит "no answer yet" или "Request timeout" - это ошибка
-    if echo "$line" | grep -q "no answer yet\|Request timeout\|Destination Host Unreachable\|Network is unreachable"; then
+# Используем -O для вывода сообщений о таймаутах (если поддерживается)
+ping -O -i 1 "$IP_ADDRESS" 2>&1 | while IFS= read -r line; do
+    # Проверяем на ошибки (таймаут, недоступность и т.д.)
+    if echo "$line" | grep -q "no answer yet\|Request timeout\|Destination Host Unreachable\|Network is unreachable\|Host is unreachable\|No route to host\|Name or service not known"; then
         # Извлекаем номер последовательности
         SEQ=$(echo "$line" | grep -o "icmp_seq=[0-9]*" | cut -d'=' -f2)
         if [ -z "$SEQ" ]; then
             SEQ="?"
         fi
-        log_message "error" "ERROR: ICMP_SEQ=$SEQ - Timeout (no response)"
+        log_message "ERROR: ICMP_SEQ=$SEQ - Timeout/Network error"
     
     # Успешный ответ
     elif echo "$line" | grep -q "icmp_seq="; then
         SEQ=$(echo "$line" | grep -o "icmp_seq=[0-9]*" | cut -d'=' -f2)
         TIME=$(echo "$line" | grep -o "time=[0-9.]* ms" | cut -d'=' -f2)
+        
         if [ -z "$TIME" ]; then
-            TIME="<1 ms"
+            TIME="<1"
+        else
+            # Убираем " ms" для числового сравнения
+            TIME_NUM=$(echo "$TIME" | sed 's/ ms//')
         fi
-        log_message "success" "ICMP_SEQ=$SEQ TIME=$TIME"
+        
+        # Проверяем, превышает ли время отклика порог
+        if [ -n "$TIME_NUM" ] && [ "$(echo "$TIME_NUM > $HIGH_THRESHOLD" | bc -l)" -eq 1 ]; then
+            log_message "ERROR: ICMP_SEQ=$SEQ TIME=${TIME}ms (HIGH LATENCY > ${HIGH_THRESHOLD}ms)"
+        else
+            log_message "ICMP_SEQ=$SEQ TIME=${TIME}ms"
+        fi
     
-    # Другие сообщения (статистика, предупреждения) - логируем как ошибки
+    # Другие сообщения (статистика) - пропускаем
     else
         # Пропускаем пустые строки и строки со статистикой
-        if [ -n "$line" ] && ! echo "$line" | grep -q "packets transmitted\|round-trip"; then
-            log_message "error" "OTHER: $line"
+        if [ -n "$line" ] && ! echo "$line" | grep -q "packets transmitted\|round-trip\|---"; then
+            log_message "INFO: $line"
         fi
     fi
 done
