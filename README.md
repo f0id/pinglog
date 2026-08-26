@@ -23,7 +23,7 @@ Bash-скрипт для логирования пингов, который з�
 ```
 ./pinglog.sh 8.8.8.8
 
-./pinglog.sh 8.8.8.8 -c -l pings.log -e errors.log
+./pinglog.sh 8.8.8.8 -w pings.log
 
 ./pinglog.sh 8.8.8.8 --no-log
 
